@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "matrix-compute-mcp"
+version = "0.1.0"
+description = "Official Model Context Protocol (MCP) server and high-level verifiable AI primitives for distributed GPU matrix multiplication"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "Distributed Matrix Multiply Team" }
+]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "distributed-computing",
+    "matrix-multiplication",
+    "freivalds",
+    "l402",
+    "pytorch",
+    "lora",
+    "cosine-similarity",
+    "pca",
+    "svd",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+
+dependencies = [
+    "matrix-compute-sdk",
+    "mcp>=1.0.0",
+    "torch>=2.0.0",
+    "safetensors>=0.4.0",
+    "numpy>=1.22.0",
+    "pydantic>=2.0.0",
+    "httpx>=0.24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[project.scripts]
+matrix-compute-mcp = "matrix_compute_mcp.server:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["matrix_compute_mcp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+pythonpath = [
+    "src",
+    "../matrix-compute-sdk/src",
+    "../matrix-contracts",
+]
+filterwarnings = [
+    "ignore::pytest_asyncio.plugin.PytestDeprecationWarning",
+]
