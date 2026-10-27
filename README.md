@@ -1,5 +1,7 @@
 # `matrix-compute-mcp`: Official MCP Server & High-Level Verifiable AI Primitives
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/matrix-compute/matrix-compute-colab/blob/main/01_quickstart_distributed_matmul.ipynb)
+
 `matrix-compute-mcp` is an independent extension package built on top of [`matrix-compute-sdk`](../matrix-compute-sdk) that provides:
 1. **High-Level Verifiable AI Primitives (`matrix_compute_mcp.ai`):** Drop-in PyTorch layers (`DistributedLinear`, `DistributedLoRALinear`), massive exact cosine similarity search (`distributed_cosine_similarity`), and distributed spectral PCA/SVD (`distributed_pca_svd`) — all verified in $O(n^2)$ via Freivalds' algorithm.
 2. **Official Model Context Protocol Server (`matrix-compute-mcp`):** Exposes decentralized GPU TFLOPS to autonomous AI agents (Claude Desktop, Cursor, Antigravity, LangChain, OpenClaw) over stdio/JSON-RPC 2.0 with L402 Macaroon or trial API key authentication.
