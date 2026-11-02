@@ -19,8 +19,8 @@
       "command": "uvx",
       "args": ["matrix-compute-mcp"],
       "env": {
-        "MATRIX_NOSTR_RELAYS": "wss://relay.matrixcompute.io",
-        "MATRIX_SETTLEMENT_API_URL": "https://settlement.matrixcompute.io",
+        "MATRIX_NOSTR_RELAYS": "wss://relay.matrix-compute.net",
+        "MATRIX_SETTLEMENT_API_URL": "https://settlement.matrix-compute.net",
         "MATRIX_L402_MACAROON": "<your-l402-macaroon-or-leave-unset-for-trial>"
       }
     }

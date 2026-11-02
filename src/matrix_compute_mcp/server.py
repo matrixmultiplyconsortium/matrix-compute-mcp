@@ -54,8 +54,8 @@ INLINE_RESULT_ELEMENT_LIMIT = 4096
 class MCPServerConfig:
     """Configuration for the `matrix-compute-mcp` server."""
 
-    nostr_relays: List[str] = field(default_factory=lambda: ["ws://localhost:8080"])
-    settlement_api_url: str = "http://localhost:8000"
+    nostr_relays: List[str] = field(default_factory=lambda: ["wss://relay.matrix-compute.net"])
+    settlement_api_url: str = "https://settlement.matrix-compute.net"
     l402_macaroon: Optional[str] = None
     l402_preimage: Optional[str] = None
     trial_api_key: Optional[str] = None
@@ -64,6 +64,7 @@ class MCPServerConfig:
     dtype_preference: str = "fp32"
     max_price_per_gflop: float = 10.0
     min_worker_vram_mb: int = 1024
+    require_confidential_compute: bool = False
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "MCPServerConfig":
@@ -71,15 +72,17 @@ class MCPServerConfig:
         relays = (
             [r.strip() for r in relays_env.split(",") if r.strip()]
             if relays_env.strip()
-            else ["ws://localhost:8080"]
+            else ["wss://relay.matrix-compute.net"]
         )
-        settlement_url = os.environ.get("MATRIX_SETTLEMENT_API_URL", "http://localhost:8000")
+        settlement_url = os.environ.get("MATRIX_SETTLEMENT_API_URL", "https://settlement.matrix-compute.net")
         macaroon = os.environ.get("MATRIX_L402_MACAROON") or None
         preimage = os.environ.get("MATRIX_L402_PREIMAGE") or None
         api_key = os.environ.get("MATRIX_TRIAL_API_KEY") or None
 
         mock_env = os.environ.get("MATRIX_OFFLINE_MOCK_MODE", "true").strip().lower()
         offline_mock = mock_env in ("1", "true", "yes", "on")
+        require_cc_env = os.environ.get("MATRIX_REQUIRE_CONFIDENTIAL_COMPUTE", "false").strip().lower()
+        require_cc = require_cc_env in ("1", "true", "yes", "on")
 
         cfg = cls(
             nostr_relays=relays,
@@ -88,6 +91,7 @@ class MCPServerConfig:
             l402_preimage=preimage,
             trial_api_key=api_key,
             offline_mock_mode=offline_mock,
+            require_confidential_compute=require_cc,
         )
         for k, v in overrides.items():
             if v is not None and hasattr(cfg, k):
@@ -103,6 +107,7 @@ class MCPServerConfig:
             dtype_preference=self.dtype_preference,
             max_price_per_gflop=self.max_price_per_gflop,
             min_worker_vram_mb=self.min_worker_vram_mb,
+            require_confidential_compute=self.require_confidential_compute,
         )
 
 
@@ -373,12 +378,20 @@ class MatrixComputeMCPServer:
         min_vram = args.get("min_vram_mb")
         max_price = args.get("max_price_per_gflop")
 
-        workers = self.client.relay_client.query_workers(
-            min_vram_mb=int(min_vram) if min_vram is not None else self.config.min_worker_vram_mb,
-            max_price_per_gflop=(
+        query_kwargs: Dict[str, Any] = {
+            "min_vram_mb": int(min_vram) if min_vram is not None else self.config.min_worker_vram_mb,
+            "max_price_per_gflop": (
                 float(max_price) if max_price is not None else self.config.max_price_per_gflop
             ),
-        )
+        }
+        if not self.config.offline_mock_mode:
+            query_kwargs["force_refresh"] = True
+
+        try:
+            workers = self.client.relay_client.query_workers(**query_kwargs)
+        except TypeError:
+            query_kwargs.pop("force_refresh", None)
+            workers = self.client.relay_client.query_workers(**query_kwargs)
 
         worker_summaries: List[Dict[str, Any]] = []
         prices: List[float] = []
@@ -873,6 +886,95 @@ class MatrixComputeMCPServer:
                 out_stream.write(json.dumps(resp) + "\n")
                 out_stream.flush()
 
+    def serve_http(self, host: str = "0.0.0.0", port: int = 8090) -> None:
+        """
+        Runs a Streamable HTTP / JSON-RPC 2.0 MCP server with health and discovery endpoints.
+        """
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        mcp_server = self
+
+        class MCPHTTPHandler(BaseHTTPRequestHandler):
+            def _send_cors_headers(self) -> None:
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept")
+
+            def do_OPTIONS(self) -> None:
+                self.send_response(204)
+                self._send_cors_headers()
+                self.end_headers()
+
+            def do_GET(self) -> None:
+                payload = {
+                    "status": "ok",
+                    "service": SERVER_NAME,
+                    "version": SERVER_VERSION,
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "transport": "streamable-http",
+                    "relays": mcp_server.config.nostr_relays,
+                    "settlement_api_url": mcp_server.config.settlement_api_url,
+                    "tools": [t["name"] for t in mcp_server.list_tools()],
+                }
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self._send_cors_headers()
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self) -> None:
+                content_length = int(self.headers.get("Content-Length", 0))
+                raw_body = self.rfile.read(content_length).decode("utf-8") if content_length > 0 else ""
+                try:
+                    msg = json.loads(raw_body)
+                except json.JSONDecodeError as exc:
+                    err_resp = {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": -32700, "message": f"Parse error: {exc}"},
+                    }
+                    body = json.dumps(err_resp).encode("utf-8")
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self._send_cors_headers()
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+
+                resp = mcp_server.handle_jsonrpc_message(msg)
+                if resp is None:
+                    self.send_response(202)
+                    self._send_cors_headers()
+                    self.end_headers()
+                    return
+
+                body = json.dumps(resp).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self._send_cors_headers()
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args: Any) -> None:
+                logger.info("MCP HTTP %s - " + format, self.address_string(), *args)
+
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
+        httpd = ThreadingHTTPServer((host, port), MCPHTTPHandler)
+        logger.info("Starting %s v%s Streamable HTTP server on %s:%d", SERVER_NAME, SERVER_VERSION, host, port)
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            httpd.server_close()
+
 
 def main(argv: Optional[List[str]] = None) -> None:
     """CLI entrypoint for `uvx matrix-compute-mcp` / `matrix-compute-mcp`."""
@@ -918,6 +1020,24 @@ def main(argv: Optional[List[str]] = None) -> None:
         action="store_false",
         help="Disable offline mock mode and connect to live Nostr relays and workers",
     )
+    parser.add_argument(
+        "--http",
+        action="store_true",
+        default=False,
+        help="Run Streamable HTTP JSON-RPC 2.0 server instead of stdio",
+    )
+    parser.add_argument(
+        "--host",
+        type=str,
+        default=os.environ.get("MATRIX_MCP_HTTP_HOST", "0.0.0.0"),
+        help="HTTP bind host when --http is enabled (default: 0.0.0.0)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("MATRIX_MCP_HTTP_PORT", "0") or "0"),
+        help="HTTP bind port when --http is enabled (default: 8090 if --http set)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -935,7 +1055,11 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     cfg = MCPServerConfig.from_env(**overrides)
     with MatrixComputeMCPServer(config=cfg) as server:
-        server.serve_stdio()
+        if args.http or args.port > 0:
+            http_port = args.port if args.port > 0 else 8090
+            server.serve_http(host=args.host, port=http_port)
+        else:
+            server.serve_stdio()
 
 
 if __name__ == "__main__":
